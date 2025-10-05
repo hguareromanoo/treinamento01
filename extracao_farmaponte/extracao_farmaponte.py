@@ -33,7 +33,7 @@ class FarmaponteScraper:
             "saude": "326",
             "beleza": "133"
         }
-        
+
         # Headers to mimic a real browser
         self.headers = {
             'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
@@ -43,7 +43,7 @@ class FarmaponteScraper:
             'Connection': 'keep-alive',
             'Upgrade-Insecure-Requests': '1',
         }
-    
+
     async def __aenter__(self):
         """Async context manager entry"""
         await self.start_session()
@@ -162,6 +162,59 @@ class FarmaponteScraper:
         
         return product_links
     
+    async def get_category_info(self, category: str) -> tuple[int, int]:
+        """
+        Get the number of pages and products for a category
+        
+        Args:
+            category: Category name (e.g., 'mamae-e-bebe')
+            
+        Returns:
+            Tuple of (number_of_pages, number_of_products)
+        """
+        category_url = f"{self.base_url}{category}"
+        print(f"🔍 Fetching category info from: {category_url}")
+        
+        html = await self.fetch_page(category_url)
+        if not html:
+            print(f"❌ Failed to fetch category page for {category}")
+            return 0, 0
+        
+        soup = BeautifulSoup(html, 'lxml')
+        
+        # Find all divs with class "text-center pt-3"
+        info_divs = soup.find_all('div', class_='text-center pt-3')
+        
+        num_pages = 0
+        num_products = 0
+        
+        for div in info_divs:
+            text = div.get_text(strip=True)
+            
+            # Check for page info: "Página 1 de 40"
+            if 'Página' in text and ' de ' in text:
+                try:
+                    # Extract number after "de"
+                    parts = text.split(' de ')
+                    if len(parts) > 1:
+                        num_pages = int(parts[1])
+                        print(f"📄 Found {num_pages} pages for {category}")
+                except ValueError:
+                    pass
+            
+            # Check for product count: "794 resultados"
+            elif 'resultados' in text:
+                try:
+                    # Extract number before "resultados"
+                    parts = text.split(' resultados')
+                    if len(parts) > 0:
+                        num_products = int(parts[0].strip())
+                        print(f"📊 Found {num_products} products for {category}")
+                except ValueError:
+                    pass
+        
+        return num_pages, num_products
+    
     async def scrape_category_pages(self, category: str, max_pages: int) -> Set[str]:
         """
         Scrape all pages of a category to collect product links
@@ -216,19 +269,35 @@ class FarmaponteScraper:
         print(f"🎯 Scraping {len(categories)} categories: {', '.join(categories)}")
         
         category_results = {}
+        total_expected_products = 0
         
         for category in categories:
-            if category not in self.categorias:
-                print(f"⚠️ Category '{category}' not found in predefined categories")
+            # Get dynamic category info
+            num_pages, num_products = await self.get_category_info(category)
+            
+            if num_pages == 0:
+                print(f"⚠️ No pages found for category '{category}', skipping")
                 continue
-                
-            max_pages = int(self.categorias[category])
-            product_links = await self.scrape_category_pages(category, max_pages)
+            
+            total_expected_products += num_products
+            print(f"📋 Category '{category}': {num_pages} pages, expecting {num_products} products")
+            
+            product_links = await self.scrape_category_pages(category, num_pages)
             category_results[category] = product_links
+            
+            # Debug: Compare expected vs actual
+            actual_products = len(product_links)
+            if actual_products != num_products:
+                print(f"⚠️ Product count mismatch for {category}: expected {num_products}, got {actual_products}")
+            else:
+                print(f"✅ Product count matches for {category}: {actual_products}")
         
         # Calculate totals
-        total_products = sum(len(links) for links in category_results.values())
-        print(f"🎉 Total products found across all categories: {total_products}")
+        total_actual_products = sum(len(links) for links in category_results.values())
+        print(f"\n📊 SUMMARY:")
+        print(f"   Expected total products: {total_expected_products}")
+        print(f"   Actual total products: {total_actual_products}")
+        print(f"   Difference: {total_actual_products - total_expected_products}")
         
         return category_results
     
@@ -250,6 +319,7 @@ class FarmaponteScraper:
             'name': '',
             'brand': '',
             'code': '',
+            'gtin': '',
             'discount': '',
             'unit_price': '',
             'discount_price': '',
@@ -273,6 +343,20 @@ class FarmaponteScraper:
             # If brand is empty, set it to "generico"
             if not product_data['brand']:
                 product_data['brand'] = 'generico'
+            
+            # Extract GTIN from JSON-LD script
+            json_ld_scripts = soup.find_all('script', type='application/ld+json')
+            for script in json_ld_scripts:
+                try:
+                    import json
+                    json_data = json.loads(script.string.strip())
+                    if isinstance(json_data, dict) and json_data.get('@type') == 'Product':
+                        gtin = json_data.get('gtin13', '')
+                        if gtin:
+                            product_data['gtin'] = gtin
+                            break
+                except (json.JSONDecodeError, AttributeError):
+                    continue
             
             # Try to get a cleaner product link from the page itself
             # Look for links with /p pattern that might be cleaner
@@ -374,6 +458,7 @@ class FarmaponteScraper:
                     'name': 'FAILED_TO_FETCH',
                     'brand': '',
                     'code': '',
+                    'gtin': '',
                     'discount': '',
                     'unit_price': '',
                     'discount_price': '',
@@ -391,6 +476,7 @@ class FarmaponteScraper:
                     'name': 'FAILED_TO_FETCH',
                     'brand': '',
                     'code': '',
+                    'gtin': '',
                     'discount': '',
                     'unit_price': '',
                     'discount_price': '',
@@ -464,6 +550,7 @@ class FarmaponteScraper:
                 'pix_discount',
                 'pix_price',
                 'code',
+                'gtin',
                 'link'
             ]
             

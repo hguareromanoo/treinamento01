@@ -85,10 +85,10 @@ def consolidate_dataframes(veracruz_df, farmaponte_df):
     return consolidated_df
 
 
-def generate_filename():
+def generate_filename(typ: str):
     """Generate timestamped filename for the extraction results"""
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    return f"extraction_results_{timestamp}.csv"
+    return f"{typ}_results_{timestamp}.csv"
 
 
 async def main():
@@ -98,6 +98,92 @@ async def main():
     start_time = time.time()
     logger.info("🚀 Starting pharmacy data extraction process...")
     
+    try:
+        # Setup environment for BigQuery data extraction
+        bucket_name = setup_environment()
+        
+        from google.cloud import bigquery
+        bq_client = bigquery.Client()
+        pharmacy_tables = {
+            'Farmaponte': 'Historico_Vendas_Farma_Ponte',
+            'Sao Joao': 'Historico_Vendas_Sao_Joao',
+            'Sao Paulo': 'Historico_Vendas_Sao_Paulo',
+            'Vera Cruz': 'Historico_Vendas_Vera_Cruz'
+        }
+        
+        logger.info("Starting BigQuery data extraction...")
+        df = None
+        
+        for name, table_id in pharmacy_tables.items():
+            logger.info(f"Querying data from {name} ({table_id})...")
+            query = f"""
+            SELECT *
+            FROM `Farmacias.{table_id}`
+            """
+            tmp_df = bq_client.query(query).to_dataframe()
+            tmp_df['Farmácia'] = name
+            df = tmp_df if df is None else pd.concat([df, tmp_df], ignore_index=True)
+            logger.info(f"Extracted {len(tmp_df):,} records from {name}")
+        
+        logger.info(f"BigQuery extraction completed with {len(df):,} total records")
+        
+        # Generate filename with timestamp
+        local_filename = generate_filename(typ='bigquery_extraction')
+        
+        # Save consolidated results locally
+        logger.info(f"Saving BigQuery results to {local_filename}")
+        df.to_csv(local_filename, index=False, encoding='utf-8')
+        
+        # Verify file was created and get file size
+        if not Path(local_filename).exists():
+            raise FileNotFoundError(f"Failed to create local file: {local_filename}")
+            
+        file_size_mb = Path(local_filename).stat().st_size / (1024 * 1024)
+        logger.info(f"Local file created successfully: {file_size_mb:.2f} MB")
+        
+        # Upload to S3
+        s3_key = f"data/{local_filename}"
+        logger.info(f"Uploading BigQuery data to S3: s3://{bucket_name}/{s3_key}")
+        
+        upload_file_to_s3(
+            local_file=local_filename,
+            bucket_name=bucket_name,
+            s3_file=s3_key
+        )
+        
+        # Calculate execution time
+        execution_time = time.time() - start_time
+        
+        # Log final statistics
+        logger.info("🎉 BigQuery extraction process completed successfully!")
+        logger.info(f"⏱️  Total execution time: {execution_time:.2f} seconds")
+        logger.info(f"📊 Total records extracted: {len(df):,}")
+        logger.info(f"📁 File saved to S3: s3://{bucket_name}/{s3_key}")
+        
+        # Display sample of consolidated data
+        logger.info("\n📋 Sample of BigQuery data:")
+        logger.info(f"\nColumns: {list(df.columns)}")
+        logger.info(f"\nFirst few records:\n{df.head().to_string()}")
+        
+        # Display pharmacy distribution
+        pharmacy_counts = df['Farmácia'].value_counts()
+        logger.info(f"\n🏪 Records by pharmacy:")
+        for pharmacy, count in pharmacy_counts.items():
+            logger.info(f"  {pharmacy}: {count:,} records")
+        
+        # Optional: Clean up local file (comment out if you want to keep it)
+        try:
+            os.remove(local_filename)
+            logger.info(f"Local file {local_filename} cleaned up")
+        except Exception as e:
+            logger.warning(f"Could not remove local file: {e}")
+        
+        return df
+
+    except Exception as e:
+        logger.warning(f"Could not connect to BigQuery: {e}")
+        logger.info("Proceeding with web scraping instead...")
+
     try:
         # Setup environment
         bucket_name = setup_environment()
@@ -130,7 +216,7 @@ async def main():
         consolidated_df = consolidate_dataframes(veracruz_df, farmaponte_df)
         
         # Generate filename with timestamp
-        local_filename = generate_filename()
+        local_filename = generate_filename(typep='extraction')
         
         # Save consolidated results locally
         logger.info(f"Saving consolidated results to {local_filename}")

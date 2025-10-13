@@ -17,7 +17,7 @@ class FarmaponteScraper:
     Uses asyncio and aiohttp for parallel processing to efficiently scrape product data.
     """
     
-    def __init__(self, max_concurrent_requests: int = 10, delay_between_requests: float = 0.5):
+    def __init__(self, max_concurrent_requests: int = 3, delay_between_requests: float = 2.0):
         self.base_url = "https://www.farmaponte.com.br/"
         self.max_concurrent_requests = max_concurrent_requests
         self.delay_between_requests = delay_between_requests
@@ -123,7 +123,7 @@ class FarmaponteScraper:
             
             print(f"🚫 Failed to fetch {url} after {retries} attempts")
             return None
-    
+
     def extract_product_links_from_page(self, html: str, base_url: str) -> Set[str]:
         """
         Extract product links from a category page
@@ -607,9 +607,9 @@ async def main():
     print("🚀 Starting Farmaponte scraping process...")
     start_time = time.time()
     
-    # Configuration
-    MAX_CONCURRENT = 15  # Adjust based on your needs and server capacity
-    DELAY_BETWEEN_REQUESTS = 0.3  # Seconds between requests
+    # Configuration - Conservative settings to be gentle on the server
+    MAX_CONCURRENT = 3  # Reduced from 15 to be more respectful
+    DELAY_BETWEEN_REQUESTS = 2.0  # Increased from 0.3s to 2s between requests
     
     async with FarmaponteScraper(
         max_concurrent_requests=MAX_CONCURRENT,

@@ -8,8 +8,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import random
 import re
 import threading
-import asyncio
-import aiohttp
+
 
 
 class VeraCruzScraper:
@@ -221,9 +220,9 @@ class FarmaponteScraper:
         self.request_lock = threading.Lock()
         self.consecutive_errors = 0
         
-        # Cache para evitar requisições duplicadas
-        self.url_cache = {}
-        self.cache_lock = threading.Lock()
+        # CRITICAL CHANGE: Cache para evitar requisições duplicadas foi removido para poupar memória
+        # self.url_cache = {} 
+        # self.cache_lock = threading.Lock() 
 
     def achar_nome(self, div):
         tag_h2 = div.find('h2', class_='title')
@@ -392,11 +391,11 @@ class FarmaponteScraper:
         return None
 
     def baixar_url(self, url, tentativas=2):
-        """OTIMIZADO: Download mais inteligente com rate limiting adaptativo"""
-        # Cache check
-        with self.cache_lock:
-            if url in self.url_cache:
-                return self.url_cache[url]
+        """OTIMIZADO: Download mais inteligente com rate limiting adaptativo (Cache check REMOVED)"""
+        # Cache check REMOVED to save memory.
+        # with self.cache_lock:
+        #     if url in self.url_cache:
+        #         return self.url_cache[url]
         
         for i in range(tentativas):
             try:
@@ -420,9 +419,9 @@ class FarmaponteScraper:
                 
                 if response.status_code == 200:
                     self.consecutive_errors = 0
-                    # Cache response
-                    with self.cache_lock:
-                        self.url_cache[url] = response
+                    # Cache response REMOVED to save memory.
+                    # with self.cache_lock:
+                    #     self.url_cache[url] = response
                     return response
                 elif response.status_code == 429:
                     self.consecutive_errors += 1
@@ -568,17 +567,17 @@ class FarmaponteScraper:
         print(f"Total de produtos: {len(df)}")
         print(f"Produtos com preço unitário: {df['Preco_unitario'].notna().sum()}")
         print(f"Produtos com preço desconto: {df['Preco_com_desconto'].notna().sum()}")
-        print(f"Produtos com preço PIX: {df['Preco_pix'].notna().sum()}")
+        print(f"Produtos com preço PIX: {df['Preco_pix'].notna().na().sum()}")
         print(f"Produtos com marca: {df['Marca'].notna().sum()}")
         print(f"Produtos com GTIN: {df['GTIN'].notna().sum()}")
 
-        # Estatísticas de performance
+        # Estatísticas de performances
         print(f"\n⚡ ESTATÍSTICAS DE PERFORMANCE:")
         print(f"Tempo total: {tempo_execucao:.1f}s")
         print(f"Páginas processadas: {max_paginas}")
         print(f"Produtos por página (média): {len(lista_de_produtos)/max_paginas:.1f}")
         print(f"Tempo por página (média): {tempo_execucao/max_paginas:.1f}s")
-        print(f"Requests em cache: {len(self.url_cache)}")
+        # print(f"Requests em cache: {len(self.url_cache)}") # REMOVIDO
         print(f"Taxa de erro final: {self.consecutive_errors}")
 
         # Exemplo de produto completo
@@ -601,4 +600,3 @@ class FarmaponteScraper:
                         print(f"  {coluna}: {valor}")
 
         return df
-

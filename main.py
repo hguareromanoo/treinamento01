@@ -99,90 +99,148 @@ def generate_filename(type):
 
 async def main():
     """
-    Main execution function
+    Main execution function - Runs BOTH BigQuery AND Scraping
     """
     start_time = time.time()
     logger.info("🚀 Starting pharmacy data extraction process...")
     
-    # A função de parada será chamada no bloco 'finally' para garantir a execução
+    bucket_name, _ = setup_environment()
+    all_dataframes = []
+    bigquery_success = False
+    scraping_success = False
+    
+    # ========================================
+    # BLOCO 1: BIGQUERY (sempre executar)
+    # ========================================
     try:
-        # Tenta extrair do BigQuery primeiro
-        try:
-            # Setup environment for BigQuery data extraction
-            bucket_name, _ = setup_environment()
+        logger.info("\n" + "="*80)
+        logger.info("📊 PHASE 1: BigQuery Extraction")
+        logger.info("="*80)
+        
+        from google.cloud import bigquery
+        bq_client = bigquery.Client()
+        
+        pharmacy_tables = {
+            'Farmaponte': 'Historico_Vendas_Farma_Ponte',
+            'Sao Joao': 'Historico_Vendas_Sao_Joao',
+            'Sao Paulo': 'Historico_Vendas_Sao_Paulo',
+            'Vera Cruz': 'Historico_Vendas_Vera_Cruz'
+        }
+        
+        df_bq = None
+        for name, table_id in pharmacy_tables.items():
+            logger.info(f"Querying data from {name} ({table_id})...")
+            query = f"SELECT * FROM `Farmacias.{table_id}`"
+            tmp_df = bq_client.query(query).to_dataframe()
+            tmp_df['Farmácia'] = name
+            df_bq = tmp_df if df_bq is None else pd.concat([df_bq, tmp_df], ignore_index=True)
+            logger.info(f"Extracted {len(tmp_df):,} records from {name}")
+        
+        if df_bq is not None and not df_bq.empty:
+            logger.info(f"✅ BigQuery SUCCESS: {len(df_bq):,} total records")
+            all_dataframes.append(df_bq)
+            bigquery_success = True
+        else:
+            logger.warning("⚠️  BigQuery returned no data")
             
-            from google.cloud import bigquery
-            bq_client = bigquery.Client()
-            pharmacy_tables = {
-                'Farmaponte': 'Historico_Vendas_Farma_Ponte',
-                'Sao Joao': 'Historico_Vendas_Sao_Joao',
-                'Sao Paulo': 'Historico_Vendas_Sao_Paulo',
-                'Vera Cruz': 'Historico_Vendas_Vera_Cruz'
-            }
-            
-            logger.info("Starting BigQuery data extraction...")
-            df = None
-            
-            for name, table_id in pharmacy_tables.items():
-                logger.info(f"Querying data from {name} ({table_id})...")
-                query = f"SELECT * FROM `Farmacias.{table_id}`"
-                tmp_df = bq_client.query(query).to_dataframe()
-                tmp_df['Farmácia'] = name
-                df = tmp_df if df is None else pd.concat([df, tmp_df], ignore_index=True)
-                logger.info(f"Extracted {len(tmp_df):,} records from {name}")
-            
-            logger.info(f"BigQuery extraction completed with {len(df):,} total records")
-            
-            local_filename = generate_filename(typ='bigquery_extraction')
-            df.to_csv(local_filename, index=False, encoding='utf-8')
-            
-            s3_key = f"data/{local_filename}"
-            upload_file_to_s3(local_file=local_filename, bucket_name=bucket_name, s3_file=s3_key)
-
-        except Exception as e:
-            logger.warning(f"Could not connect to BigQuery: {e}. Proceeding with web scraping.")
-            # Se a extração do BigQuery falhar, executa o scraping
-            bucket_name, _ = setup_environment()
-            veracruz = VeraCruzScraper()
-            farmaponte = FarmaponteScraper()
-            
-            logger.info("Starting parallel scraping operations...")
-            veracruz_task = asyncio.create_task(veracruz.scrape())
-            farmaponte_task = asyncio.create_task(farmaponte.scrape())
-            
-            logger.info("Waiting for scraping operations to complete...")
-            veracruz_df, farmaponte_df = await asyncio.gather(veracruz_task, farmaponte_task, return_exceptions=True)
-
-            if isinstance(veracruz_df, Exception):
-                logger.error(f"Veracruz scraping failed: {veracruz_df}")
-                veracruz_df = pd.DataFrame() # Cria um DF vazio para não quebrar a consolidação
-                
-            if isinstance(farmaponte_df, Exception):
-                logger.error(f"Farmaponte scraping failed: {farmaponte_df}")
-                farmaponte_df = pd.DataFrame() # Cria um DF vazio
-
-            consolidated_df = consolidate_dataframes(veracruz_df, farmaponte_df)
-            
-            if not consolidated_df.empty:
-                local_filename = generate_filename(typ='extraction')
-                consolidated_df.to_csv(local_filename, index=False, encoding='utf-8')
-                
-                s3_key = f"data/{local_filename}"
-                logger.info(f"Uploading to S3: s3://{bucket_name}/{s3_key}")
-                upload_file_to_s3(local_file=local_filename, bucket_name=bucket_name, s3_file=s3_key)
-            else:
-                logger.warning("No data was scraped, skipping file generation and S3 upload.")
-
-        execution_time = time.time() - start_time
-        logger.info(f"🎉 Extraction process completed successfully in {execution_time:.2f} seconds!")
-
     except Exception as e:
-        logger.error(f"❌ A fatal error occurred during the main process: {str(e)}")
-        logger.exception("Full error details:")
-    finally:
-        # ESTE BLOCO SEMPRE SERÁ EXECUTADO
-        logger.info("Process finished. Invoking Lambda to stop the instance.")
-        invoke_stop_lambda()
+        logger.error(f"❌ BigQuery FAILED: {str(e)}")
+        logger.exception("BigQuery error details:")
+    
+    # ========================================
+    # BLOCO 2: WEB SCRAPING (sempre executar)
+    # ========================================
+    try:
+        logger.info("\n" + "="*80)
+        logger.info("🕷️  PHASE 2: Web Scraping")
+        logger.info("="*80)
+        
+        veracruz = VeraCruzScraper()
+        farmaponte = FarmaponteScraper()
+        
+        logger.info("Starting parallel scraping operations...")
+        veracruz_task = asyncio.create_task(veracruz.scrape())
+        farmaponte_task = asyncio.create_task(farmaponte.scrape())
+        
+        logger.info("Waiting for scraping operations to complete...")
+        veracruz_df, farmaponte_df = await asyncio.gather(
+            veracruz_task, 
+            farmaponte_task, 
+            return_exceptions=True
+        )
+        
+        # Tratar exceções individuais
+        if isinstance(veracruz_df, Exception):
+            logger.error(f"Veracruz scraping failed: {veracruz_df}")
+            veracruz_df = None
+        
+        if isinstance(farmaponte_df, Exception):
+            logger.error(f"Farmaponte scraping failed: {farmaponte_df}")
+            farmaponte_df = None
+        
+        # Consolidar scraping
+        scraping_dfs = []
+        if veracruz_df is not None and not veracruz_df.empty:
+            veracruz_df = veracruz_df.copy()
+            veracruz_df['Farmácia'] = 'Vera Cruz (Scraping)'
+            scraping_dfs.append(veracruz_df)
+            logger.info(f"Veracruz: {len(veracruz_df)} records")
+        
+        if farmaponte_df is not None and not farmaponte_df.empty:
+            farmaponte_df = farmaponte_df.copy()
+            farmaponte_df['Farmácia'] = 'Farmaponte (Scraping)'
+            scraping_dfs.append(farmaponte_df)
+            logger.info(f"Farmaponte: {len(farmaponte_df)} records")
+        
+        if scraping_dfs:
+            df_scraping = pd.concat(scraping_dfs, ignore_index=True)
+            logger.info(f"✅ Scraping SUCCESS: {len(df_scraping):,} total records")
+            all_dataframes.append(df_scraping)
+            scraping_success = True
+        else:
+            logger.warning("⚠️  Scraping returned no data")
+            
+    except Exception as e:
+        logger.error(f"❌ Scraping FAILED: {str(e)}")
+        logger.exception("Scraping error details:")
+    
+    # ========================================
+    # CONSOLIDAÇÃO E UPLOAD
+    # ========================================
+    logger.info("\n" + "="*80)
+    logger.info("📊 RESULTS SUMMARY")
+    logger.info("="*80)
+    logger.info(f"BigQuery: {'✅ SUCCESS' if bigquery_success else '❌ FAILED'}")
+    logger.info(f"Scraping: {'✅ SUCCESS' if scraping_success else '❌ FAILED'}")
+    
+    if not all_dataframes:
+        logger.error("💥 FATAL: Both BigQuery and Scraping failed!")
+        raise ValueError("No data extracted from any source!")
+    
+    # Consolidar todos os dados
+    logger.info("\n📦 Consolidating all data...")
+    consolidated_df = pd.concat(all_dataframes, ignore_index=True)
+    
+    logger.info(f"✅ Total records: {len(consolidated_df):,}")
+    logger.info("\n🏪 Records by source:")
+    for farmacia in consolidated_df['Farmácia'].unique():
+        count = len(consolidated_df[consolidated_df['Farmácia'] == farmacia])
+        logger.info(f"  {farmacia}: {count:,} records")
+    
+    # Salvar e upload
+    local_filename = generate_filename(type='consolidated_extraction')
+    consolidated_df.to_csv(local_filename, index=False, encoding='utf-8')
+    
+    s3_key = f"data/{local_filename}"
+    logger.info(f"\n📤 Uploading to S3: s3://{bucket_name}/{s3_key}")
+    upload_file_to_s3(local_file=local_filename, bucket_name=bucket_name, s3_file=s3_key)
+    
+    execution_time = time.time() - start_time
+    logger.info(f"\n🎉 Extraction process completed in {execution_time:.2f} seconds!")
+    logger.info(f"✅ BigQuery: {'YES' if bigquery_success else 'NO'}")
+    logger.info(f"✅ Scraping: {'YES' if scraping_success else 'NO'}")
+    
+    return consolidated_df
 
 def invoke_stop_lambda():
     """
@@ -232,4 +290,5 @@ if __name__ == "__main__":
         logger.info("✅ Script execution logic completed.")
     except Exception as e:
         logger.error(f"💥 Fatal error in script execution: {str(e)}")
-        sys.exit(1)
+        sys.exit
+
